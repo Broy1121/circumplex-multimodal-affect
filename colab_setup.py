@@ -27,9 +27,21 @@ def setup_kaggle():
 
 
 def download_dataset():
-    print("Downloading MOSEI dataset from Kaggle...")
-    os.system("kaggle datasets download -d biswajitroy/unicirc-mosei")
-    os.system("unzip unicirc-mosei.zip -d data/")
+    print("Downloading dataset from Kaggle...")
+
+    dataset_id = "biswajitroyiitj/unicirc-processed-cmu-mosei-meld-features"
+    zip_name = "unicirc-processed-cmu-mosei-meld-features.zip"
+
+    os.system(f"kaggle datasets download -d {dataset_id}")
+
+    if os.path.exists(zip_name):
+        print("Download successful!")
+
+        os.system(f"unzip {zip_name} -d data/")
+        print("Unzipped into data/ folder.")
+    else:
+        print("Download failed. Check dataset identifier.")
+
 
 
 def load_dataset():
