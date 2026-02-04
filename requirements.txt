@@ -1,1 +1,23 @@
+# Core Deep Learning
+torch
+torchvision
+
+# Transformers (for text encoder + fusion)
+transformers
+
+# Data Handling
+numpy
+pandas
+
+# Machine Learning Utilities
+scikit-learn
+
+# Visualization (VA plots)
+matplotlib
+
+# Progress bars
+tqdm
+
+# Kaggle download support
+kaggle
 
