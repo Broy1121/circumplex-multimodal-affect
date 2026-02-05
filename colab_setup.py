@@ -10,8 +10,10 @@ Steps:
 4. Loads the dataset for training
 """
 
-import os
 import pickle
+import kagglehub
+import shutil
+import os
 
 
 def install_requirements():
@@ -27,20 +29,18 @@ def setup_kaggle():
 
 
 def download_dataset():
-    print("Downloading dataset from Kaggle...")
+    print("Downloading dataset via kagglehub...")
 
-    dataset_id = "biswajitroyiitj/unicirc-processed-cmu-mosei-meld-features"
-    zip_name = "unicirc-processed-cmu-mosei-meld-features.zip"
+    path = kagglehub.dataset_download(
+        "biswajitroyiitj/unicirc-processed-cmu-mosei-meld-features"
+    )
 
-    os.system(f"kaggle datasets download -d {dataset_id}")
+    print("Dataset location:", path)
 
-    if os.path.exists(zip_name):
-        print("Download successful!")
+    os.makedirs("data", exist_ok=True)
 
-        os.system(f"unzip {zip_name} -d data/")
-        print("Unzipped into data/ folder.")
-    else:
-        print("Download failed. Check dataset identifier.")
+    for file in os.listdir(path):
+        shutil.copy(os.path.join(path, file), "data/")
 
 
 
