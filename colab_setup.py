@@ -28,6 +28,7 @@ def setup_kaggle():
     os.system("chmod 600 ~/.kaggle/kaggle.json")
 
 
+#download both dataset I have uploaded in Kaggle
 def download_dataset():
     print("Downloading dataset via kagglehub...")
 
@@ -39,8 +40,17 @@ def download_dataset():
 
     os.makedirs("data", exist_ok=True)
 
-    for file in os.listdir(path):
-        shutil.copy(os.path.join(path, file), "data/")
+    for item in os.listdir(path):
+        src = os.path.join(path, item)
+        dst = os.path.join("data", item)
+
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+
+    print("Dataset copied into data/")
+
 
 
 
