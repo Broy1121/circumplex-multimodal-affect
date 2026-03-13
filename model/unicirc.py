@@ -8,10 +8,11 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 import warnings
 warnings.filterwarnings("ignore", message="Mean of empty slice")
 
+
 # ═══════════════════════════════════════════════════════════
 # DEVICE SETUP
-# Automatically uses GPU if available, otherwise CPU
-# GPU makes training ~10x faster
+# Automatically uses GPU if available, otherwise CPU.
+# GPU makes training ~10x faster than CPU.
 # ═══════════════════════════════════════════════════════════
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
@@ -19,12 +20,13 @@ print(f"Device: {device}")
 
 # ═══════════════════════════════════════════════════════════
 # SECTION 1 — CONSTANTS
-# These define the fixed sequence lengths for each modality.
-# Shorter sequences are padded with zeros to reach these lengths.
-# Longer sequences are truncated.
-#   MAX_TEXT   = 40  words per utterance  (WORDVEC, 300-dim GloVe)
-#   MAX_AUDIO  = 600 frames per utterance (COVAREP, 74-dim acoustic)
-#   MAX_VISION = 200 frames per utterance (FACET,   35-dim facial)
+# Fixed sequence lengths for each modality.
+# Shorter sequences → padded with zeros to reach these lengths.
+# Longer sequences  → truncated to these lengths.
+#
+#   MAX_TEXT   = 40   words per utterance  (WORDVEC, 300-dim GloVe)
+#   MAX_AUDIO  = 600  frames per utterance (COVAREP, 74-dim acoustic)
+#   MAX_VISION = 200  frames per utterance (FACET,   35-dim facial)
 # ═══════════════════════════════════════════════════════════
 MAX_TEXT   = 40
 MAX_AUDIO  = 600
@@ -33,6 +35,7 @@ MAX_VISION = 200
 
 # ═══════════════════════════════════════════════════════════
 # SECTION 2 — HELPER FUNCTIONS
+# Small utility functions used during data loading.
 # ═══════════════════════════════════════════════════════════
 
 def extract_va(label_features):
@@ -66,7 +69,7 @@ def clean_features(features):
         Inf values propagate through the network and cause NaN loss.
         Replacing with 0 is safe — it means 'no signal' for that frame.
     """
-    features = features.copy()  # avoid mutating the original array
+    features = features.copy()               # avoid mutating the original array
     features[~np.isfinite(features)] = 0.0
     return features
 
@@ -95,10 +98,35 @@ def pad_sequence_2d(features, max_len):
 
 
 # ═══════════════════════════════════════════════════════════
-# SECTION 3 — DATASET CLASS
-# Loads and preprocesses all utterances from processed_mosei.pkl
-# Each sample contains text, audio, vision sequences + VA labels
+# SECTION 3 — DATA LOADING
+# Loads processed_mosei.pkl from disk.
+# The pickle contains pre-extracted features for ~10,913
+# utterances from CMU-MOSEI YouTube video clips.
 # ═══════════════════════════════════════════════════════════
+
+def load_mosei(path="data/processed_mosei.pkl"):
+    """
+    Loads the processed MOSEI pickle file.
+
+    Args:
+        path: relative path to processed_mosei.pkl
+    Returns:
+        mosei dict {video_id: [utterance_dicts]}
+    """
+    print(f"Loading MOSEI from {path} ...")
+    with open(path, "rb") as f:
+        mosei = pickle.load(f)
+    print(f"Loaded {len(mosei)} videos")
+    return mosei
+
+
+# ═══════════════════════════════════════════════════════════
+# SECTION 4 — DATASET CLASS
+# Converts raw MOSEI pickle into PyTorch tensors.
+# Each sample: text (40,300) + audio (600,74) + vision (200,35)
+#              + valence (scalar) + arousal (scalar)
+# ═══════════════════════════════════════════════════════════
+
 class MOSEITemporalDataset(Dataset):
     """
     PyTorch Dataset for CMU-MOSEI multimodal emotion data.
@@ -131,15 +159,15 @@ class MOSEITemporalDataset(Dataset):
                     # Clean Inf values then pad/truncate to fixed lengths
                     text   = pad_sequence_2d(
                         clean_features(wordvec_raw['features'].astype(np.float32)),
-                        MAX_TEXT)    # → (40,  300)
+                        MAX_TEXT)      # → (40,  300)
 
                     audio  = pad_sequence_2d(
                         clean_features(covarep_raw['features'].astype(np.float32)),
-                        MAX_AUDIO)   # → (600, 74)
+                        MAX_AUDIO)     # → (600, 74)
 
                     vision = pad_sequence_2d(
                         clean_features(facet_raw['features'].astype(np.float32)),
-                        MAX_VISION)  # → (200, 35)
+                        MAX_VISION)    # → (200, 35)
 
                     # Extract VA labels from 7-dim label vector
                     valence, arousal = extract_va(labels_raw['features'])
@@ -184,38 +212,17 @@ def collate_fn(batch):
 
 
 # ═══════════════════════════════════════════════════════════
-# BUILD DATASET AND DATALOADERS
-# Splits data 80/10/10 → train / validation / test
-# Uses fixed random seed (42) for reproducibility
+# Now loads the pickle automatically when run as a script.
+# Also available when imported as a module in a notebook:
+#   from model.unicirc import MultimodalTemporalModel, dataset
 # ═══════════════════════════════════════════════════════════
+mosei   = load_mosei("data/processed_mosei.pkl")
 dataset = MOSEITemporalDataset(mosei)
 print(f"Total utterances: {len(dataset)}")
 
-s = dataset[0]
-print(f"text={s['text'].shape} audio={s['audio'].shape} vision={s['vision'].shape}")
-print(f"valence={s['valence'].item():.4f}  arousal={s['arousal'].item():.4f}")
-
-total   = len(dataset)
-n_train = int(0.8 * total)   # 80% → model learns from these
-n_val   = int(0.1 * total)   # 10% → monitor during training
-n_test  = total - n_train - n_val  # 10% → final honest evaluation
-
-train_set, val_set, test_set = random_split(
-    dataset, [n_train, n_val, n_test],
-    generator=torch.Generator().manual_seed(42)  # fixed seed = same split every run
-)
-
-# batch_size=32 balances GPU memory and training stability
-# shuffle=True on train to prevent the model learning data order
-train_loader = DataLoader(train_set, batch_size=32, shuffle=True,  collate_fn=collate_fn)
-val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
-test_loader  = DataLoader(test_set,  batch_size=32, shuffle=False, collate_fn=collate_fn)
-
-print(f"Train={len(train_set)}  Val={len(val_set)}  Test={len(test_set)}")
-
 
 # ═══════════════════════════════════════════════════════════
-# SECTION 4 — MODEL ARCHITECTURE
+# SECTION 5 — MODEL ARCHITECTURE
 # ═══════════════════════════════════════════════════════════
 
 class TemporalEncoder(nn.Module):
@@ -237,14 +244,14 @@ class TemporalEncoder(nn.Module):
         Output (B, hidden_dim)
 
     Why Bidirectional GRU:
-        - Forward pass: understands context from past words/frames
-        - Backward pass: understands context from future words/frames
-        - Together: full temporal context for each position
+        Forward pass  → understands context from past words/frames
+        Backward pass → understands context from future words/frames
+        Together      → full temporal context for each position
 
     Why Attention pooling instead of mean pooling:
-        - Not all frames are equally important emotionally
-        - A peak moment of anger matters more than neutral frames
-        - Attention learns to weight important moments higher
+        Not all frames are equally important emotionally.
+        A peak moment of anger matters more than neutral frames.
+        Attention learns to weight important moments higher.
     """
     def __init__(self, input_dim, hidden_dim=128, num_layers=2, dropout=0.3):
         super().__init__()
@@ -253,12 +260,12 @@ class TemporalEncoder(nn.Module):
         self.gru = nn.GRU(
             input_dim, hidden_dim,
             num_layers=num_layers,
-            batch_first=True,       # input shape: (batch, seq, features)
+            batch_first=True,        # input shape: (batch, seq, features)
             bidirectional=True,
             dropout=dropout if num_layers > 1 else 0.0
         )
 
-        # Attention: assigns a scalar weight to each timestep
+        # Attention: assigns a scalar importance weight to each timestep
         self.attn = nn.Linear(hidden_dim * 2, 1)
 
         # Project from hidden_dim*2 → hidden_dim
@@ -277,12 +284,12 @@ class TemporalEncoder(nn.Module):
 
 class MultimodalTemporalModel(nn.Module):
     """
-    Full multimodal emotion model.
+    Full multimodal emotion model — UniCirc.
 
     Architecture:
-        Text   (B, 40,  300) → TemporalEncoder → (B, 128)  ─┐
-        Audio  (B, 600, 74)  → TemporalEncoder → (B, 128)  ──┼→ Transformer → (B, 384) → [V, A]
-        Vision (B, 200, 35)  → TemporalEncoder → (B, 128)  ─┘
+        Text   (B, 40,  300) → TemporalEncoder → (B, 128) ─┐
+        Audio  (B, 600, 74)  → TemporalEncoder → (B, 128) ──┼→ Transformer → (B, 384) → [V, A]
+        Vision (B, 200, 35)  → TemporalEncoder → (B, 128) ─┘
 
     Why Transformer for fusion:
         Self-attention over 3 modality tokens lets each modality
@@ -290,8 +297,8 @@ class MultimodalTemporalModel(nn.Module):
         and vice versa — capturing cross-modal emotion cues.
 
     Output:
-        valence: (B,) — positive/negative emotion score
-        arousal: (B,) — calm/excited activation score
+        valence: (B,) — positive/negative emotion  (range ~-3 to +3)
+        arousal: (B,) — calm/excited activation    (range  0 to +3)
     """
     def __init__(self, hidden_dim=128, n_heads=4, dropout=0.3):
         super().__init__()
@@ -299,16 +306,16 @@ class MultimodalTemporalModel(nn.Module):
         # Three separate encoders — one per modality
         # Input dims match the feature sizes in MOSEI:
         #   text:   300-dim GloVe word vectors
-        #   audio:  74-dim COVAREP acoustic features
-        #   vision: 35-dim FACET facial action unit features
+        #   audio:  74-dim  COVAREP acoustic features
+        #   vision: 35-dim  FACET facial action unit features
         self.text_enc   = TemporalEncoder(300, hidden_dim, dropout=dropout)
         self.audio_enc  = TemporalEncoder(74,  hidden_dim, dropout=dropout)
         self.vision_enc = TemporalEncoder(35,  hidden_dim, dropout=dropout)
 
-        # Transformer fusion — attends across the 3 modality tokens
-        # d_model = hidden_dim = 128
-        # nhead = 4 → 4 attention heads, each focuses on different relationships
-        # num_layers = 2 → two rounds of cross-modal attention
+        # Transformer fusion over 3 modality tokens
+        # d_model=128  → each token is 128-dim
+        # nhead=4      → 4 attention heads, each focuses on different relationships
+        # num_layers=2 → two rounds of cross-modal attention
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=n_heads,
@@ -319,7 +326,7 @@ class MultimodalTemporalModel(nn.Module):
         self.fusion = nn.TransformerEncoder(encoder_layer, num_layers=2)
 
         # VA prediction head
-        # Input: 3 fused modality vectors concatenated → 128*3 = 384
+        # Input:  3 fused modality vectors concatenated → 128*3 = 384
         # Output: 2 numbers → [valence, arousal]
         self.va_head = nn.Sequential(
             nn.Linear(hidden_dim * 3, 64),
@@ -346,12 +353,12 @@ class MultimodalTemporalModel(nn.Module):
         # Predict VA → (B, 2)
         out = self.va_head(flat)
 
-        return out[:, 0], out[:, 1]  # valence, arousal
+        return out[:, 0], out[:, 1]   # valence, arousal
 
 
 # ═══════════════════════════════════════════════════════════
-# SECTION 5 — LOSS FUNCTION
-# Combined MSE + CCC loss for VA regression
+# SECTION 6 — LOSS FUNCTION
+# Combined MSE + CCC loss for VA regression.
 # ═══════════════════════════════════════════════════════════
 
 def concordance_correlation_coefficient(pred, target):
@@ -366,15 +373,15 @@ def concordance_correlation_coefficient(pred, target):
         MSE only measures numerical distance.
         CCC also measures whether predictions track the
         correct direction and scale of emotion changes.
-        A model that always predicts the mean gets MSE=low
+        A model that always predicts the mean gets low MSE
         but CCC=0 — CCC catches this failure mode.
 
     Fix vs original:
         Added 1e-8 to numerator to prevent NaN when
         both pred and target have zero variance.
     """
-    pred_mean,   target_mean  = pred.mean(),  target.mean()
-    pred_var,    target_var   = pred.var(),   target.var()
+    pred_mean,  target_mean = pred.mean(),  target.mean()
+    pred_var,   target_var  = pred.var(),   target.var()
     covariance = ((pred - pred_mean) * (target - target_mean)).mean()
 
     ccc = (2 * covariance + 1e-8) / (
@@ -402,13 +409,13 @@ def va_loss(v_pred, a_pred, v_true, a_true, alpha=0.5):
 
 
 # ═══════════════════════════════════════════════════════════
-# SECTION 6 — TRAINING LOOP FUNCTION
-# Runs one full pass through a dataloader (train or eval)
-# Returns average loss, CCC-V, CCC-A for that pass
+# SECTION 7 — EPOCH RUNNER
+# Runs one full pass through a dataloader (train or eval).
+# Returns average loss, CCC-V, CCC-A for that pass.
 #
 # Fix vs original:
-#   model is now passed as an argument instead of
-#   relying on a global variable — safer and reusable
+#   model is now passed as an argument instead of relying
+#   on a global variable — safer and reusable.
 # ═══════════════════════════════════════════════════════════
 
 def run_epoch(model, loader, train=True):
@@ -416,11 +423,11 @@ def run_epoch(model, loader, train=True):
     Runs one epoch (full pass through the dataset).
 
     If train=True:
-        - Model weights are updated via backpropagation
-        - Gradients are computed and clipped
+        Model weights are updated via backpropagation.
+        Gradients are computed and clipped.
     If train=False:
-        - No weight updates (validation/test mode)
-        - Faster, uses less memory
+        No weight updates (validation/test mode).
+        Faster, uses less memory.
 
     Returns:
         avg_loss, avg_ccc_v, avg_ccc_a  for this epoch
@@ -444,122 +451,137 @@ def run_epoch(model, loader, train=True):
             loss = va_loss(v_pred, a_pred, v_true, a_true)
 
             if train:
-                optimizer.zero_grad()       # clear previous gradients
-                loss.backward()             # compute new gradients
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                # ↑ gradient clipping prevents exploding gradients
-                # if any gradient exceeds norm 1.0, all are scaled down
-                optimizer.step()            # update weights
+                optimizer.zero_grad()                                     # clear old gradients
+                loss.backward()                                           # compute new gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # clip to prevent explosion
+                optimizer.step()                                          # update weights
 
             total_loss += loss.item()
-            ccc_v_sum  += concordance_correlation_coefficient(
-                v_pred.detach(), v_true).item()
-            ccc_a_sum  += concordance_correlation_coefficient(
-                a_pred.detach(), a_true).item()
+            ccc_v_sum  += concordance_correlation_coefficient(v_pred.detach(), v_true).item()
+            ccc_a_sum  += concordance_correlation_coefficient(a_pred.detach(), a_true).item()
 
     n = len(loader)
     return total_loss / n, ccc_v_sum / n, ccc_a_sum / n
 
 
 # ═══════════════════════════════════════════════════════════
-# SECTION 7 — MODEL INITIALISATION
-# Creates model, optimizer, and learning rate scheduler
+# MAIN — runs when executed directly:  python model/unicirc.py
+#
+# When imported as a module in a notebook:
+#   from model.unicirc import MultimodalTemporalModel
+# all classes and functions above load, but the training
+# loop below does NOT run automatically.
 # ═══════════════════════════════════════════════════════════
 
-model = MultimodalTemporalModel(hidden_dim=128).to(device)
+if __name__ == "__main__":
 
-# AdamW optimizer
-# lr=3e-4   → learning rate (how big each weight update step is)
-# weight_decay=1e-4 → L2 regularisation (prevents overfitting)
-optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    # ── Confirm sample shapes after loading ───────────────
+    s = dataset[0]
+    print(f"text={s['text'].shape} audio={s['audio'].shape} vision={s['vision'].shape}")
+    print(f"valence={s['valence'].item():.4f}  arousal={s['arousal'].item():.4f}")
 
-# CosineAnnealingLR — gradually reduces learning rate over training
-# T_max=30   → reaches minimum lr at epoch 30
-# eta_min=1e-6 → minimum learning rate (never goes below this)
-# Why: big steps early (fast learning), tiny steps late (fine-tuning)
-scheduler = CosineAnnealingLR(optimizer, T_max=30, eta_min=1e-6)
+    # ── Build dataloaders ─────────────────────────────────
+    # Split 80/10/10 → train / val / test
+    # Fixed seed=42 ensures the same split every run (reproducibility)
+    total   = len(dataset)
+    n_train = int(0.8 * total)
+    n_val   = int(0.1 * total)
+    n_test  = total - n_train - n_val
 
-
-# ═══════════════════════════════════════════════════════════
-# SECTION 8 — SANITY CHECK
-# Runs one forward pass before training to confirm
-# shapes, device, and NaN status are all correct
-# ═══════════════════════════════════════════════════════════
-
-batch = next(iter(train_loader))
-with torch.no_grad():
-    vp, ap = model(
-        batch['text'].to(device),
-        batch['audio'].to(device),
-        batch['vision'].to(device)
+    train_set, val_set, test_set = random_split(
+        dataset, [n_train, n_val, n_test],
+        generator=torch.Generator().manual_seed(42)
     )
 
-print(f"\nForward pass OK — v_pred:{vp.shape}  a_pred:{ap.shape}")
-print(f"Params: {sum(p.numel() for p in model.parameters()):,}")
-print(f"NaNs in output: {torch.isnan(vp).any() or torch.isnan(ap).any()}")
+    # batch_size=32 balances GPU memory and training stability
+    # shuffle=True on train → prevents model learning data order
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True,  collate_fn=collate_fn)
+    val_loader   = DataLoader(val_set,   batch_size=32, shuffle=False, collate_fn=collate_fn)
+    test_loader  = DataLoader(test_set,  batch_size=32, shuffle=False, collate_fn=collate_fn)
+    print(f"Train={len(train_set)}  Val={len(val_set)}  Test={len(test_set)}")
 
+    # ── Model initialisation ──────────────────────────────
+    model = MultimodalTemporalModel(hidden_dim=128).to(device)
 
-# ═══════════════════════════════════════════════════════════
-# SECTION 9 — TRAINING LOOP
-# Trains for up to 30 epochs with early stopping.
-# Saves the best model checkpoint automatically.
-#
-# Early stopping:
-#   If validation loss doesn't improve for PATIENCE epochs
-#   in a row, training stops early to avoid wasted compute
-#   and overfitting. In previous runs best was epoch 15,
-#   so PATIENCE=7 would have stopped at epoch 22.
-# ═══════════════════════════════════════════════════════════
+    # AdamW: lr=3e-4 (step size), weight_decay=1e-4 (L2 regularisation)
+    optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
 
-EPOCHS       = 30
-PATIENCE     = 7    # stop if no improvement for 7 consecutive epochs
-best_val_loss = float('inf')
-patience_ctr  = 0
-history       = []
+    # Cosine schedule: large lr early (fast learning) → tiny lr late (fine-tuning)
+    scheduler = CosineAnnealingLR(optimizer, T_max=30, eta_min=1e-6)
 
-for epoch in range(1, EPOCHS + 1):
-
-    # Training pass — model learns from training data
-    tr_loss, tr_ccc_v, tr_ccc_a = run_epoch(model, train_loader, train=True)
-
-    # Validation pass — check performance on unseen data
-    vl_loss, vl_ccc_v, vl_ccc_a = run_epoch(model, val_loader,   train=False)
-
-    # Reduce learning rate according to cosine schedule
-    scheduler.step()
-
-    # Record all metrics for later plotting
-    history.append({
-        'epoch':    epoch,
-        'tr_loss':  tr_loss,  'vl_loss':  vl_loss,
-        'tr_ccc_v': tr_ccc_v, 'vl_ccc_v': vl_ccc_v,
-        'tr_ccc_a': tr_ccc_a, 'vl_ccc_a': vl_ccc_a,
-    })
-
-    # Save checkpoint if this is the best validation loss so far
-    if vl_loss < best_val_loss:
-        best_val_loss = vl_loss
-        patience_ctr  = 0
-        torch.save(model.state_dict(), "best_temporal_model.pt")
-        tag = " ← best"
-    else:
-        patience_ctr += 1
-        tag = ""
-
-    # Print progress every 5 epochs and on epoch 1
-    if epoch % 5 == 0 or epoch == 1:
-        print(
-            f"Ep {epoch:02d} | "
-            f"Loss {tr_loss:.4f}/{vl_loss:.4f} | "
-            f"CCC-V {tr_ccc_v:.3f}/{vl_ccc_v:.3f} | "
-            f"CCC-A {tr_ccc_a:.3f}/{vl_ccc_a:.3f}{tag}"
+    # ── Sanity check ──────────────────────────────────────
+    # One forward pass before training to confirm shapes and no NaNs
+    batch = next(iter(train_loader))
+    with torch.no_grad():
+        vp, ap = model(
+            batch['text'].to(device),
+            batch['audio'].to(device),
+            batch['vision'].to(device)
         )
 
-    # Early stopping — halt if no improvement for PATIENCE epochs
-    if patience_ctr >= PATIENCE:
-        print(f"\nEarly stopping at epoch {epoch} — "
-              f"no improvement for {PATIENCE} epochs")
-        break
+    print(f"\nForward pass OK — v_pred:{vp.shape}  a_pred:{ap.shape}")
+    print(f"Params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"NaNs in output: {torch.isnan(vp).any() or torch.isnan(ap).any()}")
 
-print(f"\nBest val loss : {best_val_loss:.4f}")
-print(f"Best checkpoint saved → best_temporal_model.pt")
+    # ── Training loop ─────────────────────────────────────
+    # Trains up to 30 epochs with early stopping.
+    # Best checkpoint saved automatically to best_temporal_model.pt
+    #
+    # Early stopping:
+    #   Stops if val loss doesn't improve for PATIENCE consecutive
+    #   epochs — avoids wasted compute and overfitting.
+    #   Previous runs showed best at epoch 15, so PATIENCE=7
+    #   would have stopped at epoch 22, saving ~8 epochs of compute.
+
+    EPOCHS        = 30
+    PATIENCE      = 7
+    best_val_loss = float('inf')
+    patience_ctr  = 0
+    history       = []
+
+    for epoch in range(1, EPOCHS + 1):
+
+        # Training pass — weights update on every batch
+        tr_loss, tr_ccc_v, tr_ccc_a = run_epoch(model, train_loader, train=True)
+
+        # Validation pass — no weight updates, honest performance check
+        vl_loss, vl_ccc_v, vl_ccc_a = run_epoch(model, val_loader,   train=False)
+
+        # Reduce learning rate according to cosine schedule
+        scheduler.step()
+
+        # Record metrics for later plotting
+        history.append({
+            'epoch':    epoch,
+            'tr_loss':  tr_loss,  'vl_loss':  vl_loss,
+            'tr_ccc_v': tr_ccc_v, 'vl_ccc_v': vl_ccc_v,
+            'tr_ccc_a': tr_ccc_a, 'vl_ccc_a': vl_ccc_a,
+        })
+
+        # Save checkpoint if best val loss so far
+        if vl_loss < best_val_loss:
+            best_val_loss = vl_loss
+            patience_ctr  = 0
+            torch.save(model.state_dict(), "best_temporal_model.pt")
+            tag = " ← best"
+        else:
+            patience_ctr += 1
+            tag = ""
+
+        # Print progress on epoch 1 and every 5 epochs
+        if epoch % 5 == 0 or epoch == 1:
+            print(
+                f"Ep {epoch:02d} | "
+                f"Loss {tr_loss:.4f}/{vl_loss:.4f} | "
+                f"CCC-V {tr_ccc_v:.3f}/{vl_ccc_v:.3f} | "
+                f"CCC-A {tr_ccc_a:.3f}/{vl_ccc_a:.3f}{tag}"
+            )
+
+        # Early stopping check
+        if patience_ctr >= PATIENCE:
+            print(f"\nEarly stopping at epoch {epoch} — "
+                  f"no improvement for {PATIENCE} epochs")
+            break
+
+    print(f"\nBest val loss : {best_val_loss:.4f}")
+    print(f"Best checkpoint saved → best_temporal_model.pt")
