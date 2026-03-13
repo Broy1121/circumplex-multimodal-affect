@@ -612,8 +612,9 @@ if __name__ == "__main__":
                   f"no improvement for {PATIENCE} epochs")
             break
 
-    with open("training_history.json", "w") as f:
-    json.dump(history, f, indent=2)
-    print("Training history saved → training_history.json")
+    
     print(f"\nBest val loss : {best_val_loss:.4f}")
     print(f"Best checkpoint saved → best_temporal_model.pt")
+    with open("training_history.json", "w") as f:
+        json.dump(history, f, indent=2)
+    print("Training history saved → training_history.json")
