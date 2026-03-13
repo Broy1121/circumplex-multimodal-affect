@@ -6,7 +6,31 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import warnings
+from pathlib import Path
 warnings.filterwarnings("ignore", message="Mean of empty slice")
+
+# ═══════════════════════════════════════════════════════════
+# PATH RESOLUTION
+# Always resolve data paths relative to this file's location,
+# not the current working directory.
+#
+# Project layout:
+#   circumplex-multimodal-affect/
+#   ├── model/
+#   │   └── unicirc.py          ← __file__  (this script)
+#   └── data/
+#       └── processed_mosei.pkl
+#
+# Works correctly whether run as:
+#   python model/unicirc.py      (from project root)
+#   python unicirc.py            (from inside model/)
+#   !python model/unicirc.py     (from Colab)
+# ═══════════════════════════════════════════════════════════
+SCRIPT_DIR   = Path(__file__).resolve().parent   # → .../model/
+PROJECT_ROOT = SCRIPT_DIR.parent                 # → .../circumplex-multimodal-affect/
+DATA_DIR     = PROJECT_ROOT / "data"             # → .../data/
+
+DEFAULT_MOSEI_PATH = DATA_DIR / "processed_mosei.pkl"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -104,7 +128,7 @@ def pad_sequence_2d(features, max_len):
 # utterances from CMU-MOSEI YouTube video clips.
 # ═══════════════════════════════════════════════════════════
 
-def load_mosei(path="data/processed_mosei.pkl"):
+def load_mosei(path=None):
     """
     Loads the processed MOSEI pickle file.
 
@@ -113,6 +137,10 @@ def load_mosei(path="data/processed_mosei.pkl"):
     Returns:
         mosei dict {video_id: [utterance_dicts]}
     """
+    # Use DEFAULT_MOSEI_PATH if no path given — resolves relative to this file
+    if path is None:
+        path = DEFAULT_MOSEI_PATH
+    path = Path(path)
     print(f"Loading MOSEI from {path} ...")
     with open(path, "rb") as f:
         mosei = pickle.load(f)
@@ -216,7 +244,7 @@ def collate_fn(batch):
 # Also available when imported as a module in a notebook:
 #   from model.unicirc import MultimodalTemporalModel, dataset
 # ═══════════════════════════════════════════════════════════
-mosei   = load_mosei("data/processed_mosei.pkl")
+mosei   = load_mosei()   # uses DEFAULT_MOSEI_PATH automatically
 dataset = MOSEITemporalDataset(mosei)
 print(f"Total utterances: {len(dataset)}")
 
